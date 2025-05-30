@@ -1,0 +1,7 @@
+flask
+firebase-admin
+openai
+requests
+pdfplumber
+scipy
+python-dotenv

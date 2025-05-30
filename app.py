@@ -7,8 +7,8 @@ import requests
 import pdfplumber
 from scipy.spatial.distance import cosine
 from dotenv import load_dotenv
-import importlib.util
-import sys
+from google.cloud.firestore_v1.base_query import FieldFilter  # Add this import
+
 
 app = Flask(__name__)
 load_dotenv()  # Loads OPENAI_API_KEY from .env
@@ -21,7 +21,7 @@ db = firestore.client()
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Import matcher functions
+# Import matcher functions if available
 try:
     from matcher import rank_resumes_by_keywords, extract_text_from_pdf
     MATCHER_AVAILABLE = True
@@ -30,11 +30,13 @@ except ImportError:
     MATCHER_AVAILABLE = False
 
 def get_resume_text(resume_url):
+    print(f"Downloading resume from URL: {resume_url}")
     try:
         response = requests.get(resume_url)
         if response.status_code != 200:
             print(f"Failed to download PDF: {resume_url} Status: {response.status_code}")
             return ""
+        print(f"Successfully downloaded PDF: {resume_url}")
         with open('temp_resume.pdf', 'wb') as f:
             f.write(response.content)
         text = ""
@@ -43,16 +45,19 @@ def get_resume_text(resume_url):
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
+        print(f"Extracted text length: {len(text)} characters")
         return text
     except Exception as e:
         print(f"Error extracting PDF text: {e}")
         return ""
 
 def get_embedding(text):
+    print(f"Generating embedding for text of length {len(text)}")
     response = client.embeddings.create(
         input=text,
-        model="text-embedding-3-large"
+        model="text-embedding-3-small"
     )
+    print(f"Embedding response: {response}")
     return response.data[0].embedding
 
 def cosine_similarity(vec1, vec2):
@@ -61,99 +66,98 @@ def cosine_similarity(vec1, vec2):
 def rank_resumes(jd_text, resumes):
     jd_emb = get_embedding(jd_text)
     scored = []
+    print(f"Job description embedding length: {len(jd_emb)}")
     for r in resumes:
         r_emb = get_embedding(r.get('text', ''))
         score = cosine_similarity(jd_emb, r_emb)
         scored.append((score, r))
     scored.sort(key=lambda x: x[0], reverse=True)
+    print(f"Ranked {len(scored)} resumes based on cosine similarity")
     return scored
+
+def get_job_text_blob(job_data):
+    parts = []
+    if job_data.get('description'):
+        parts.append(job_data['description'])
+    if job_data.get('requirements'):
+        parts.append(job_data['requirements'])
+    if job_data.get('responsibilities'):
+        parts.append(job_data['responsibilities'])
+    if job_data.get('skills'):
+        parts.append(" ".join(job_data['skills']))
+    if job_data.get('benefits'):
+        parts.append(" ".join(job_data['benefits']))
+    combined_text = "\n".join(parts)
+    print(f"Combined job text blob length: {len(combined_text)}")
+    return combined_text
 
 @app.route('/match_resumes', methods=['POST'])
 def match_resumes():
     data = request.json
-    category = data.get('category', 'frontend')  # Category: frontend, backend, designers, etc.
+    category = data.get('category')
+    job_id = data.get('jobId')
     top_n = int(data.get('top_n', 5))
+
+    print(f"Received request with category: {category}, jobId: {job_id}, top_n: {top_n}")
+
+    if not category or not job_id:
+        return jsonify({"error": "Missing required parameters: 'category' and 'jobId'"}), 400
     
-    # Step 1: Get candidates from the specified category
-    candidates = []
+    # Step 1: Fetch candidates for the given category and jobId
     candidates_ref = db.collection('candidateCategories').document(category).collection('candidates')
-    candidate_docs = candidates_ref.stream()
+    query = candidates_ref.where(filter=FieldFilter("jobIdApplied", "==", job_id))
+    candidate_docs = query.stream()
     
-    # Dictionary to keep track of job descriptions by job_id
-    job_descriptions = {}
-    
-    # Create a dictionary of candidates with their job_ids
     candidates_with_jobs = []
-    
     for doc in candidate_docs:
         candidate_data = doc.to_dict()
-        if 'name' in candidate_data and 'resume_url' in candidate_data and 'job_id' in candidate_data:
-            # Store candidate with job_id
+        if 'fullName' in candidate_data and 'resumeUrl' in candidate_data:
             candidates_with_jobs.append({
-                'name': candidate_data['name'],
-                'resume_url': candidate_data['resume_url'],
-                'job_id': candidate_data['job_id'],
+                'name': candidate_data['fullName'],
+                'resume_url': candidate_data['resumeUrl'],
+                'job_id': candidate_data['jobIdApplied'],
                 'candidate_id': doc.id,
-                # Preserve other fields that might be useful
                 'experience': candidate_data.get('experience'),
                 'email': candidate_data.get('email')
             })
-    
-    if not candidates_with_jobs:
-        return jsonify({"error": f"No candidates found in category '{category}'"}), 404
-    
-    # Step 2: Get job descriptions for each unique job_id
-    job_ids = set(c['job_id'] for c in candidates_with_jobs)
-    jobs_ref = db.collection('jobCategories').document(category).collection('jobs')
-    
-    for job_id in job_ids:
-        try:
-            job_doc = jobs_ref.document(job_id).get()
-            if job_doc.exists:
-                job_data = job_doc.to_dict()
-                job_descriptions[job_id] = job_data.get('job_description', '')
-            else:
-                print(f"Warning: Job with ID {job_id} not found")
-                job_descriptions[job_id] = ""  # Set empty job description as fallback
-        except Exception as e:
-            print(f"Error retrieving job description for job ID {job_id}: {e}")
-            job_descriptions[job_id] = ""
-    
-    # Step 3: Group candidates by job_id and process each group
-    results = []
-    
-    for job_id, job_description in job_descriptions.items():
-        if not job_description:
-            continue  # Skip jobs with no description
-            
-        job_candidates = [c for c in candidates_with_jobs if c['job_id'] == job_id]
-        
-        # Extract text from resume URLs
-        for candidate in job_candidates:
-            candidate['text'] = get_resume_text(candidate['resume_url'])
-        
-        # Rank resumes against this specific job description
-        ranked = rank_resumes(job_description, job_candidates)
-        top_candidates = ranked[:top_n]
-        
-        # Format results for this job
-        job_results = [{
-            "name": r[1]['name'],
-            "resume_url": r[1]['resume_url'],
-            "candidate_id": r[1]['candidate_id'],
-            "job_id": r[1]['job_id'],
-            "score": round(r[0], 4)
-        } for r in top_candidates]
-        
-        results.extend(job_results)
-    
-    # Sort all results by score (across all jobs)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    
-    # Take top N overall
-    final_results = results[:top_n]
 
-    return jsonify(final_results)
+    print(f"Found {len(candidates_with_jobs)} candidates matching criteria")
+
+    if not candidates_with_jobs:
+        return jsonify({"error": f"No candidates found for category '{category}' with jobId '{job_id}'"}), 404
+    
+    # Step 2: Get job data & build combined text blob
+    jobs_ref = db.collection('jobCategories').document(category).collection('jobs')
+    job_doc = jobs_ref.document(job_id).get()
+
+    print(f"Job exists: {job_doc.exists}")
+
+    if not job_doc.exists:
+        return jsonify({"error": f"Job with ID '{job_id}' not found in category '{category}'"}), 404
+    
+    job_data = job_doc.to_dict()
+    job_text_blob = get_job_text_blob(job_data)
+    if not job_text_blob.strip():
+        return jsonify({"error": "Job description and related fields are empty"}), 400
+    
+    # Step 3: Extract text from resumes and rank candidates
+    for candidate in candidates_with_jobs:
+        candidate['text'] = get_resume_text(candidate['resume_url'])
+    
+    ranked = rank_resumes(job_text_blob, candidates_with_jobs)
+    top_candidates = ranked[:top_n]
+    print(f"Top {top_n} candidates ranked successfully")
+    
+    results = [{
+        "name": r[1]['name'],
+        "resume_url": r[1]['resume_url'],
+        "candidate_id": r[1]['candidate_id'],
+        "job_id": r[1]['job_id'],
+        "score": round(r[0], 4)
+    } for r in top_candidates]
+    print(f"Returning {len(results)} top candidates")
+    return jsonify(results)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
