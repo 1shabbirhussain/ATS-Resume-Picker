@@ -1,9 +1,4 @@
-import argparse
-import json
-import pdfplumber
-import os
 import re
-import string
 from collections import Counter
 
 # Simple English stopwords list
@@ -21,8 +16,17 @@ STOPWORDS = {
     'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 
     'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 
     'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't', 'can', 
-    'will', 'just', 'don', 'should', 'now'
+    'will', 'just', 'don', 'should', 'now', 'd', 'll', 'm', 'o', 're', 've', 'y', 
+    'ain', 'aren', 'couldn', 'didn', 'doesn', 'hadn', 'hasn', 'haven', 'isn', 
+    'ma', 'mightn', 'mustn', 'needn', 'neednt', 'shan', 'shouldn', 'wasn', 
+    'weren', 'won', 'wouldn', 'was', 'weren', 'won', 'yourselves', 'yourself', 
+    'd', 're', 'll', 've', 'y', 'ain', 'aren', 'couldn', 'didn', 'doesn', 
+    'hadn', 'hasn', 'haven', 'isn', 'ma', 'mightn', 'mustn', 'needn', 'neednt', 
+    'shan', 'shouldn', 'wasn', 'weren', 'won', 'wouldn', 'u', 'ur', 'asap', 
+    'p.m', 'a.m', 'etc', 'fyi', 'btw', 'tbh', 'omg', 'lmao', 'lol', 'idk', 
+    'brb', 'np', 'tho', 'ya', 'yep', 'yeah', 'nope', 'huh', 'mm', 'eh', 'uh'
 }
+
 
 def simple_tokenize(text):
     """Simple word tokenization"""
@@ -53,18 +57,73 @@ def extract_keywords(text):
     
     # Common tech terms/skills that might be relevant
     tech_terms = [
+        # Frontend Technologies
         'javascript', 'python', 'java', 'react', 'angular', 'vue', 
         'node', 'express', 'api', 'rest', 'graphql', 'frontend', 'backend',
-        'css', 'html', 'aws', 'cloud', 'docker', 'kubernetes', 'database',
-        'sql', 'nosql', 'mongodb', 'design', 'ui', 'ux', 'testing', 'agile',
-        'scrum', 'mobile', 'responsive', 'seo', 'typescript', 'php', 'ruby',
-        'c#', 'c++', 'swift', 'objective-c', 'flutter', 'react native',
-        'django', 'flask', 'spring', 'laravel', 'rails', 'express.js', 
-        'microservices', 'devops', 'cicd', 'jenkins', 'git', 'github',
-        'gitlab', 'bitbucket', 'jira', 'confluence', 'serverless', 'lambda',
-        'azure', 'gcp', 'firebase', 'elasticsearch', 'redis', 'postgresql',
-        'mysql', 'oracle', 'mssql', 'rest api', 'soap', 'oauth', 'jwt'
+        'css', 'html', 'scss', 'sass', 'bootstrap', 'tailwind', 'webpack', 'npm', 'yarn',
+        'typescript', 'ember', 'redux', 'jquery', 'ajax', 'typescript', 'sass', 'gulp', 
+        'pwa', 'web components', 'next.js', 'gatsby', 'jquery', 'mui', 'rxjs', 'babel',
+        
+        # Backend Technologies
+        'java', 'python', 'node.js', 'ruby', 'go', 'c#', 'c++', 'swift', 'objective-c', 'php',
+        'asp.net', 'django', 'flask', 'spring', 'laravel', 'rails', 'express.js', 
+        'microservices', 'serverless', 'lambda', 'graphql', 'docker', 'kubernetes', 
+        'devops', 'cicd', 'jenkins', 'apache', 'nginx', 'redis', 'memcached', 'rabbitmq',
+        
+        # Databases and Data Technologies
+        'database', 'sql', 'nosql', 'mongodb', 'postgresql', 'mysql', 'oracle', 'mssql', 
+        'cassandra', 'redis', 'elasticsearch', 'hadoop', 'spark', 'kafka', 'dynamoDB', 
+        'bigquery', 'data lake', 'data warehouse', 'etl', 'fivetran', 'airflow', 'bigdata', 
+        'nosql', 'graphql', 'sqlite', 'firebase', 'realm',
+        
+        # Cloud Services & Platforms
+        'aws', 'google cloud', 'azure', 'gcp', 'firebase', 'oracle cloud', 'ibm cloud',
+        'cloud computing', 'cloud native', 'cloudformation', 'cloudwatch', 's3', 'ec2',
+        'lambda', 'elastic beanstalk', 'rds', 'dynamodb', 'azure functions', 'google compute engine', 
+        'kubernetes', 'containerization', 'docker', 'serverless', 'vmware', 'kubernetes', 
+        'vpc', 's3', 'gke', 'eks', 'aks', 'cloud storage', 'cloud networking', 'terraform', 
+        'ansible', 'chef', 'puppet', 'cloud security', 'cloud automation',
+        
+        # CI/CD Tools
+        'git', 'github', 'gitlab', 'bitbucket', 'circleci', 'jenkins', 'travis', 'azure devops', 
+        'terraform', 'ansible', 'chef', 'puppet', 'bamboo', 'concourse', 'teamcity', 'flux',
+        
+        # Mobile Development
+        'react native', 'flutter', 'swift', 'objective-c', 'kotlin', 'java android', 'xcode', 
+        'android studio', 'firebase', 'ios', 'android', 'react', 'native',
+        
+        # UX/UI Design
+        'design', 'ux', 'ui', 'figma', 'sketch', 'photoshop', 'illustrator', 'invision', 
+        'adobe xd', 'wireframes', 'prototyping', 'user interface', 'user experience',
+        
+        # Testing & QA
+        'testing', 'unit tests', 'integration testing', 'e2e testing', 'cypress', 'jest', 
+        'mocha', 'chai', 'selenium', 'testng', 'pytest', 'jira', 'confluence', 'test automation', 
+        'load testing', 'performance testing', 'bug tracking', 'continuous testing',
+        
+        # Agile & Project Management
+        'agile', 'scrum', 'kanban', 'lean', 'jira', 'confluence', 'trello', 'asana', 
+        'project management', 'product management', 'devops', 'sprint', 'retrospective', 
+        'user stories', 'epics', 'backlog', 'kanban board', 'product backlog',
+        
+        # Miscellaneous Technologies
+        'oauth', 'jwt', 'soap', 'rest api', 'websocket', 'graphql', 'mqtt', 'webRTC', 'json', 
+        'xml', 'swagger', 'api gateway', 'authentication', 'authorization', 'ldap', 
+        'ssl', 'tls', 'tcp/ip', 'vpn', 'http', 'https', 'dns', 'rest', 'webhooks',
+        'docker compose', 'microservices', 'container orchestration', 'api management', 
+        'monitoring', 'logging', 'metrics', 'prometheus', 'grafana', 'kibana', 'data pipeline',
+        'ci/cd', 'oauth2', 'jwt authentication', 'service mesh', 'istio', 'envoy',
+        'prometheus', 'grafana', 'opentelemetry', 'openapi', 'web scraping', 'data engineering',
+        
+        # Others
+        'blockchain', 'cryptocurrency', 'ethereum', 'bitcoin', 'solidity', 'smart contracts', 
+        'nft', 'web3', 'iot', 'devsecops', 'ai', 'machine learning', 'deep learning', 'data science', 
+        'tensorflow', 'keras', 'pytorch', 'scikit-learn', 'pandas', 'numpy', 'opencv', 'ai ethics', 
+        'data visualization', 'big data', 'artificial intelligence', 'chatbot', 'computer vision',
+        'nlp', 'nlp models', 'chatgpt', 'automation', 'robotics', 'neural networks', 'reinforcement learning',
+        'speech recognition', 'ai models', 'self-driving', 'autonomous vehicles'
     ]
+
     
     # Filter to include tech terms
     tech_matches = []
@@ -79,49 +138,6 @@ def extract_keywords(text):
     
     # Return unique keywords
     return set(common_words + tech_matches)
-
-def extract_text_from_pdf(pdf_path_or_url):
-    """Extract text content from a PDF file or URL"""
-    text = ""
-    try:
-        # Check if it's a URL
-        if pdf_path_or_url.startswith('http'):
-            import requests
-            import tempfile
-            
-            # Download the PDF to a temporary file
-            response = requests.get(pdf_path_or_url)
-            if response.status_code != 200:
-                print(f"Failed to download PDF: {pdf_path_or_url} Status: {response.status_code}")
-                return ""
-                
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
-                temp_path = temp_file.name
-                temp_file.write(response.content)
-            
-            # Process the temp file
-            with pdfplumber.open(temp_path) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-            
-            # Clean up the temp file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-        else:
-            # Local file
-            with pdfplumber.open(pdf_path_or_url) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-        return text
-    except Exception as e:
-        print(f"Error extracting text from PDF: {e}")
-        return ""
 
 def calculate_keyword_match_score(resume_text, jd_text):
     """Calculate a match score based on keyword overlap"""
@@ -138,37 +154,16 @@ def calculate_keyword_match_score(resume_text, jd_text):
     score = len(matched_keywords) / len(jd_keywords) * 100
     return score, matched_keywords, resume_keywords, jd_keywords
 
-def rank_resumes_by_keywords(jd_text, resumes):
-    """
-    Rank a list of resumes based on keyword matching with a job description.
-    
-    Args:
-        jd_text (str): The job description text
-        resumes (list): List of dictionaries containing resume info, with 'text' key for content
-        
-    Returns:
-        list: Ranked list of tuples (score, resume_dict, matched_keywords)
-    """
-    scored = []
-    
-    for r in resumes:
-        resume_text = r.get('text', '')
-        if not resume_text:
-            continue
-            
-        score, matched_kw, resume_kw, jd_kw = calculate_keyword_match_score(resume_text, jd_text)
-        
-        # Add to scored list
-        scored.append((score, r, matched_kw))
-    
-    # Sort by score, descending
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored
-
 def run_test_example():
     """Run a simple test example with predefined texts"""
-    resume = "Experienced frontend developer with React, JavaScript, and CSS skills."
-    jd = "Looking for a frontend engineer proficient in React.js, JavaScript, and HTML/CSS."
+    resume = """
+     Looking for a frontend engineer proficient in React.js, JavaScript, and HTML/CSS.
+    Experience in developing responsive web applications using React and Node.js is required.
+    """
+    jd = """
+    Looking for a frontend engineer proficient in React.js, JavaScript, and HTML/CSS.
+    Experience in developing responsive web applications using React and Node.js is required.
+    """
     
     score, matched, resume_kw, jd_kw = calculate_keyword_match_score(resume, jd)
     
@@ -180,56 +175,6 @@ def run_test_example():
     print(f"Matched Keywords: {matched}")
     print(f"Match Score: {score:.2f}%")
 
-def main():
-    """Main function to run the matcher from command line"""
-    parser = argparse.ArgumentParser(description="Match resume against job description using keyword extraction")
-    parser.add_argument("--resume", help="Path to resume file or text content")
-    parser.add_argument("--jd", help="Path to job description file or text content")
-    parser.add_argument("--test", action="store_true", help="Run with test example")
-    
-    args = parser.parse_args()
-    
-    if args.test:
-        run_test_example()
-        return
-    
-    # If both resume and jd are provided
-    if args.resume and args.jd:
-        # Check if the inputs are files or direct text
-        resume_text = ""
-        jd_text = ""
-        
-        # Process resume input
-        if os.path.isfile(args.resume):
-            if args.resume.lower().endswith('.pdf'):
-                resume_text = extract_text_from_pdf(args.resume)
-            else:
-                with open(args.resume, 'r') as f:
-                    resume_text = f.read()
-        else:
-            resume_text = args.resume
-        
-        # Process job description input
-        if os.path.isfile(args.jd):
-            if args.jd.lower().endswith('.pdf'):
-                jd_text = extract_text_from_pdf(args.jd)
-            else:
-                with open(args.jd, 'r') as f:
-                    jd_text = f.read()
-        else:
-            jd_text = args.jd
-        
-        # Calculate match score
-        score, matched, resume_kw, jd_kw = calculate_keyword_match_score(resume_text, jd_text)
-        
-        print("\n===== MATCH RESULTS =====")
-        print(f"Resume Keywords: {resume_kw}")
-        print(f"JD Keywords: {jd_kw}")
-        print(f"Matched Keywords: {matched}")
-        print(f"Match Score: {score:.2f}%")
-    else:
-        # If no arguments provided, run test example
-        run_test_example()
-
 if __name__ == "__main__":
-    main()
+    # Run the test example with hardcoded JD and resume
+    run_test_example()
