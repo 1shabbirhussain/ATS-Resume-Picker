@@ -1,163 +1,170 @@
 import os
-from flask import Flask, request, jsonify
-import firebase_admin
-from firebase_admin import credentials, firestore
-from openai import OpenAI  # Updated import
-import requests
-import pdfplumber
-from scipy.spatial.distance import cosine
+from flask import Flask, render_template, request, jsonify, send_from_directory
+from werkzeug.utils import secure_filename
+from PIL import Image, ImageDraw, ImageFont
+import openai
+from rembg import remove
+import io
+import uuid
 from dotenv import load_dotenv
-from google.cloud.firestore_v1.base_query import FieldFilter  # Add this import
 
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
-load_dotenv()  # Loads OPENAI_API_KEY from .env
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
-# Initialize Firebase Admin SDK (no need for storage since you use S3)
-cred = credentials.Certificate('serviceAccountKey.json')
-firebase_admin.initialize_app(cred)
+# Configure OpenAI API
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
-db = firestore.client()
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Ensure upload directory exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Import matcher functions if available
-try:
-    from matcher import rank_resumes_by_keywords, extract_text_from_pdf
-    MATCHER_AVAILABLE = True
-except ImportError:
-    print("Warning: matcher.py not found or contains errors. Keyword matching will not be available.")
-    MATCHER_AVAILABLE = False
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-def get_resume_text(resume_url):
-    print(f"Downloading resume from URL: {resume_url}")
+def remove_background(image_path):
+    with open(image_path, 'rb') as f:
+        img_data = f.read()
+    
+    # Remove background
+    output_data = remove(img_data)
+    
+    # Save the result
+    output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"nobg_{os.path.basename(image_path)}")
+    with open(output_path, 'wb') as f:
+        f.write(output_data)
+    
+    return output_path
+
+def generate_image_with_dalle(template_path, person_image_path, name, position_image="center-right", position_text="center-left"):
+    # Open the template image
+    template = Image.open(template_path).convert("RGBA")
+    template_width, template_height = template.size
+    
+    # Open the person's image (with background removed)
+    person_img = Image.open(person_image_path).convert("RGBA")
+    
+    # Resize person's image to be bigger (e.g., 60% of template width)
+    new_person_width = int(template_width * 1)
+    person_img.thumbnail((new_person_width, template_height))  # keep aspect ratio
+    
+    # Calculate position for person image (center-right)
+    x_person = template_width - person_img.width + 120  # 50 px padding from right
+    y_person = (template_height - person_img.height) // 2  # vertically centered
+    
+    # Create a copy of the template to modify
+    final_image = template.copy()
+    
+    # Paste the person's image onto the template (with alpha mask for transparency)
+    final_image.paste(person_img, (x_person, y_person), person_img)
+    
+    # Prepare to draw text
+    draw = ImageDraw.Draw(final_image)
+    
+    # Calculate font size bigger than before
+    font_size = int(template_width / 8)  # bigger than before
+    
+    # Load font with fallback
     try:
-        response = requests.get(resume_url)
-        if response.status_code != 200:
-            print(f"Failed to download PDF: {resume_url} Status: {response.status_code}")
-            return ""
-        print(f"Successfully downloaded PDF: {resume_url}")
-        with open('temp_resume.pdf', 'wb') as f:
-            f.write(response.content)
-        text = ""
-        with pdfplumber.open('temp_resume.pdf') as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        print(f"Extracted text length: {len(text)} characters")
-        return text
-    except Exception as e:
-        print(f"Error extracting PDF text: {e}")
-        return ""
-
-def get_embedding(text):
-    print(f"Generating embedding for text of length {len(text)}")
-    response = client.embeddings.create(
-        input=text,
-        model="text-embedding-3-small"
-    )
-    print(f"Embedding response: {response}")
-    return response.data[0].embedding
-
-def cosine_similarity(vec1, vec2):
-    return 1 - cosine(vec1, vec2)
-
-def rank_resumes(jd_text, resumes):
-    jd_emb = get_embedding(jd_text)
-    scored = []
-    print(f"Job description embedding length: {len(jd_emb)}")
-    for r in resumes:
-        r_emb = get_embedding(r.get('text', ''))
-        score = cosine_similarity(jd_emb, r_emb)
-        scored.append((score, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    print(f"Ranked {len(scored)} resumes based on cosine similarity")
-    return scored
-
-def get_job_text_blob(job_data):
-    parts = []
-    if job_data.get('description'):
-        parts.append(job_data['description'])
-    if job_data.get('requirements'):
-        parts.append(job_data['requirements'])
-    if job_data.get('responsibilities'):
-        parts.append(job_data['responsibilities'])
-    if job_data.get('skills'):
-        parts.append(" ".join(job_data['skills']))
-    if job_data.get('benefits'):
-        parts.append(" ".join(job_data['benefits']))
-    combined_text = "\n".join(parts)
-    print(f"Combined job text blob length: {len(combined_text)}")
-    return combined_text
-
-@app.route('/match_resumes', methods=['POST'])
-def match_resumes():
-    data = request.json
-    category = data.get('category')
-    job_id = data.get('jobId')
-    top_n = int(data.get('top_n', 5))
-
-    print(f"Received request with category: {category}, jobId: {job_id}, top_n: {top_n}")
-
-    if not category or not job_id:
-        return jsonify({"error": "Missing required parameters: 'category' and 'jobId'"}), 400
+        font = ImageFont.truetype("arialbd.ttf", font_size)
+    except:
+        try:
+            font = ImageFont.truetype("impact.ttf", font_size)
+        except:
+            try:
+                font = ImageFont.truetype("timesbd.ttf", font_size)
+            except:
+                font = ImageFont.load_default(font_size)
     
-    # Step 1: Fetch candidates for the given category and jobId
-    candidates_ref = db.collection('candidateCategories').document(category).collection('candidates')
-    query = candidates_ref.where(filter=FieldFilter("jobIdApplied", "==", job_id))
-    candidate_docs = query.stream()
+    # Calculate text size
+    text_bbox = draw.textbbox((0, 0), name, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
     
-    candidates_with_jobs = []
-    for doc in candidate_docs:
-        candidate_data = doc.to_dict()
-        if 'fullName' in candidate_data and 'resumeUrl' in candidate_data:
-            candidates_with_jobs.append({
-                'name': candidate_data['fullName'],
-                'resume_url': candidate_data['resumeUrl'],
-                'job_id': candidate_data['jobIdApplied'],
-                'candidate_id': doc.id,
-                'experience': candidate_data.get('experience'),
-                'email': candidate_data.get('email')
-            })
+    # Calculate position for text (center-left)
+    x_text = 100  # 50 px padding from left
+    y_text = (template_height - text_height) // 2  # vertically centered
+    
+    # Draw blackish semi-transparent background rectangle behind text
+    rectangle_padding = 20
+    rectangle_x0 = x_text - rectangle_padding
+    rectangle_y0 = y_text - rectangle_padding
+    rectangle_x1 = x_text + text_width + rectangle_padding
+    rectangle_y1 = y_text + text_height + rectangle_padding
+    
+    # Create semi-transparent black rectangle
+    # rectangle_color = (0, 0, 0, 180)  # black with alpha 180/255
+    
+    # To draw semi-transparent shapes, we use an overlay image
+    overlay = Image.new('RGBA', final_image.size, (0,0,0,0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    # overlay_draw.rectangle([rectangle_x0, rectangle_y0, rectangle_x1, rectangle_y1],)
+    
+    # Composite overlay with final_image
+    final_image = Image.alpha_composite(final_image, overlay)
+    
+    # Draw the text on top in gold color
+    draw = ImageDraw.Draw(final_image)
+    draw.text((x_text, y_text), name, font=font, fill=(255, 255, 255))
+    
+    # Save the final image as PNG with transparency preserved
+    output_filename = f"generated_{uuid.uuid4().hex}.png"
+    output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
+    final_image.convert("RGB").save(output_path, quality=95)
+    
+    return output_path
 
-    print(f"Found {len(candidates_with_jobs)} candidates matching criteria")
 
-    if not candidates_with_jobs:
-        return jsonify({"error": f"No candidates found for category '{category}' with jobId '{job_id}'"}), 404
-    
-    # Step 2: Get job data & build combined text blob
-    jobs_ref = db.collection('jobCategories').document(category).collection('jobs')
-    job_doc = jobs_ref.document(job_id).get()
 
-    print(f"Job exists: {job_doc.exists}")
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    if not job_doc.exists:
-        return jsonify({"error": f"Job with ID '{job_id}' not found in category '{category}'"}), 404
+@app.route('/generate', methods=['POST'])
+def generate():
+    if 'template' not in request.files or 'person_image' not in request.files:
+        return jsonify({"error": "Missing files"}), 400
     
-    job_data = job_doc.to_dict()
-    job_text_blob = get_job_text_blob(job_data)
-    if not job_text_blob.strip():
-        return jsonify({"error": "Job description and related fields are empty"}), 400
+    template_file = request.files['template']
+    person_file = request.files['person_image']
+    name = request.form.get('name', '')
     
-    # Step 3: Extract text from resumes and rank candidates
-    for candidate in candidates_with_jobs:
-        candidate['text'] = get_resume_text(candidate['resume_url'])
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
     
-    ranked = rank_resumes(job_text_blob, candidates_with_jobs)
-    top_candidates = ranked[:top_n]
-    print(f"Top {top_n} candidates ranked successfully")
+    if template_file.filename == '' or person_file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
     
-    results = [{
-        "name": r[1]['name'],
-        "resume_url": r[1]['resume_url'],
-        "candidate_id": r[1]['candidate_id'],
-        "job_id": r[1]['job_id'],
-        "score": round(r[0], 4)
-    } for r in top_candidates]
-    print(f"Returning {len(results)} top candidates")
-    return jsonify(results)
+    if template_file and allowed_file(template_file.filename) and person_file and allowed_file(person_file.filename):
+        # Save uploaded files
+        template_filename = secure_filename(template_file.filename)
+        person_filename = secure_filename(person_file.filename)
+        
+        template_path = os.path.join(app.config['UPLOAD_FOLDER'], template_filename)
+        person_path = os.path.join(app.config['UPLOAD_FOLDER'], person_filename)
+        
+        template_file.save(template_path)
+        person_file.save(person_path)
+        
+        # Remove background from person's image
+        nobg_person_path = remove_background(person_path)
+        
+        # Generate final image
+        try:
+            final_image_path = generate_image_with_dalle(template_path, nobg_person_path, name)
+            final_filename = os.path.basename(final_image_path)
+            return jsonify({"image_url": f"/uploads/{final_filename}"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"error": "Invalid file type"}), 400
 
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 if __name__ == '__main__':
     app.run(debug=True)

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Celebration Image Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        input, button {
+            padding: 10px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            text-align: center;
+        }
+        #generatedImage {
+            max-width: 100%;
+            border: 1px solid #ddd;
+            margin-top: 10px;
+        }
+        .loading {
+            display: none;
+            margin: 20px 0;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Celebration Image Generator</h1>
+        <form id="generationForm">
+            <div class="form-group">
+                <label for="name">Name to Display:</label>
+                <input type="text" id="name" name="name" required placeholder="Enter the person's name">
+            </div>
+            
+            <div class="form-group">
+                <label for="template">Template Image:</label>
+                <input type="file" id="template" name="template" accept="image/png, image/jpeg" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="person_image">Person's Photo:</label>
+                <input type="file" id="person_image" name="person_image" accept="image/png, image/jpeg" required>
+            </div>
+            
+            <button type="submit">Generate Image</button>
+        </form>
+        
+        <div class="loading" id="loading">
+            <p>Generating your image... Please wait.</p>
+        </div>
+        
+        <div id="result" style="display: none;">
+            <h2>Your Generated Image</h2>
+            <img id="generatedImage" src="" alt="Generated Image">
+            <p><a id="downloadLink" href="#" download>Download Image</a></p>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('generationForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            formData.append('name', document.getElementById('name').value);
+            formData.append('template', document.getElementById('template').files[0]);
+            formData.append('person_image', document.getElementById('person_image').files[0]);
+            
+            // Show loading, hide result
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // Display the generated image
+                    const imageUrl = data.image_url;
+                    document.getElementById('generatedImage').src = imageUrl;
+                    document.getElementById('downloadLink').href = imageUrl;
+                    document.getElementById('result').style.display = 'block';
+                } else {
+                    alert('Error: ' + (data.error || 'Something went wrong'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
